@@ -1,95 +1,95 @@
 import os
+import uuid
+from functools import wraps
+from datetime import datetime, timedelta, timezone
 from flask import Flask, request, jsonify
 from flask_cors import CORS
-from dotenv import load_dotenv
-import jwt
-from datetime import datetime, timedelta, timezone
+# Make sure quantum_otp_generator.py is in the same directory
 import quantum_otp_generator as q_otp
 
-# Load environment variables
-load_dotenv()
+# --- In-memory store (for development) ---
+# In production, replace this with a database like Redis.
+otp_store = {}
 
+# --- A decorator to protect API routes ---
+def require_api_key(f):
+    @wraps(f)
+    def decorated_function(*args, **kwargs):
+        api_key = request.headers.get('X-API-Key')
+        if not api_key or not is_valid_api_key_in_db(api_key):
+            return jsonify({"error": "Unauthorized: Invalid or missing API Key"}), 401
+        return f(*args, **kwargs)
+    return decorated_function
+
+def is_valid_api_key_in_db(key):
+    # This is a placeholder for your database lookup logic.
+    # In a real app, you would query your `api_keys` table.
+    # For this example, 'SECRET-KEY-123' is the only valid key.
+    print(f"Validating API Key: {key}")
+    return key == 'SECRET-KEY-123'
+
+# --- Flask App Setup ---
 app = Flask(__name__)
-
-# --- CORS ---
-CORS(
-    app,
-    supports_credentials=True,
-    origins=["http://127.0.0.1:5500", "http://localhost:5500", "null"],
-    allow_headers=["Content-Type", "Authorization"]
-)
-
-# --- Secret Key ---
-SECRET_KEY = os.environ.get('SECRET_KEY', 'dev-secret')
-if not SECRET_KEY:
-    print("⚠️ WARNING: SECRET_KEY not set, using insecure fallback.")
-
-# --- In-memory store (instead of database) ---
-user_store = {}
+# Adding CORS is crucial for allowing web pages to call your API
+CORS(app)
 
 # --- API Endpoints ---
-@app.route('/api/request-otp', methods=['POST'])
-def request_otp():
-    data = request.get_json()
-    email = data.get('email')
-    if not email:
-        return jsonify({"error": "Email is required"}), 400
 
+@app.route('/api/v1/request-otp', methods=['POST'])
+@require_api_key
+def request_otp_v1():
+    data = request.get_json()
+    end_user_email = data.get('email')
+
+    if not end_user_email:
+        return jsonify({"error": "The 'email' of the end-user is required"}), 400
+
+    # 1. Generate a real quantum OTP
     otp = q_otp.generate_quantum_otp(6)
     otp_expiration = datetime.now(timezone.utc) + timedelta(minutes=5)
-    user_store[email] = {"otp": otp, "otp_expiration": otp_expiration}
 
+    # 2. Store it temporarily (simulating Redis)
+    otp_store[end_user_email] = {"otp": otp, "otp_expiration": otp_expiration}
+
+    # 3. Simulate sending the email
     try:
-        q_otp.send_otp_by_email(otp, email)
-        return jsonify({"message": f"OTP sent to {email}."}), 200
+        q_otp.send_otp_by_email(otp, end_user_email)
+        return jsonify({"message": f"OTP sent to {end_user_email}."}), 200
     except Exception as e:
         app.logger.error(f"Failed to send email: {e}")
         return jsonify({"error": "Failed to send OTP email."}), 500
+    # In a real app, you would call: send_email_via_sendgrid(end_user_email, otp)
+    print(f"OTP for {end_user_email} is: {otp} (This would normally be emailed)")
 
-@app.route('/api/verify-otp', methods=['POST'])
-def verify_otp():
+    return jsonify({"message": f"An OTP has been generated for {end_user_email}."}), 200
+
+
+@app.route('/api/v1/verify-otp', methods=['POST'])
+@require_api_key
+def verify_otp_v1():
     data = request.get_json()
-    email = data.get('email')
+    end_user_email = data.get('email')
     submitted_otp = data.get('otp')
 
-    if not email or not submitted_otp:
+    if not end_user_email or not submitted_otp:
         return jsonify({"error": "Email and OTP are required"}), 400
 
-    user_data = user_store.get(email)
-    if not user_data:
-        return jsonify({"error": "No OTP found for this email"}), 404
+    # Check the OTP against the in-memory store
+    user_data = otp_store.get(end_user_email)
 
-    if user_data["otp"] != submitted_otp:
-        return jsonify({"error": "Invalid OTP."}), 400
+    if not user_data:
+        return jsonify({"success": False, "message": "No OTP found for this email. Please request one first."}), 404
 
     if datetime.now(timezone.utc) > user_data["otp_expiration"]:
-        return jsonify({"error": "OTP has expired."}), 400
+        return jsonify({"success": False, "message": "OTP has expired."}), 400
+        
+    if user_data["otp"] == submitted_otp:
+        # Clear the OTP after successful verification
+        del otp_store[end_user_email]
+        return jsonify({"success": True, "message": "OTP verified successfully."}), 200
+    else:
+        return jsonify({"success": False, "message": "Invalid OTP."}), 400
 
-    token = jwt.encode({
-        'email': email,
-        'exp': datetime.now(timezone.utc) + timedelta(hours=24)
-    }, SECRET_KEY, algorithm="HS256")
-
-    # Clear OTP after use
-    user_store[email] = {"otp": None, "otp_expiration": None}
-
-    return jsonify({"message": "Verification successful!", "token": token}), 200
-
-@app.route('/api/profile', methods=['GET'])
-def get_profile():
-    auth_header = request.headers.get('Authorization')
-    if not auth_header:
-        return jsonify({"error": "Authorization header missing"}), 401
-
-    try:
-        token = auth_header.split(" ")[1]
-        data = jwt.decode(token, SECRET_KEY, algorithms=["HS256"])
-        return jsonify({"user": {"email": data["email"]}})
-    except jwt.ExpiredSignatureError:
-        return jsonify({"error": "Token expired"}), 401
-    except jwt.InvalidTokenError:
-        return jsonify({"error": "Invalid token"}), 401
-
-# --- Run ---
 if __name__ == '__main__':
-    app.run(debug=True, port=5000)
+    app.run(debug=True, port=5001)
+
