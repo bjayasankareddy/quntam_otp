@@ -1,0 +1,34 @@
+# --- Environment Variables ---
+# Never commit sensitive information like API keys, passwords, or secret keys.
+# The .env file contains these and should always be ignored.
+.env
+
+# --- Python ---
+# Ignore virtual environment folders
+/venv/
+/env/
+/.venv/
+/.env/
+
+# Ignore Python cache files
+__pycache__/
+*.pyc
+*.pyo
+*.pyd
+
+# Ignore distribution/packaging artifacts
+/build/
+/dist/
+*.egg-info/
+*.egg
+
+# --- IDE/Editor specific files ---
+# Visual Studio Code
+.vscode/
+
+# PyCharm
+.idea/
+
+# --- Other ---
+# Log files
+*.log
